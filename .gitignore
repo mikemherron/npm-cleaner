@@ -5,6 +5,8 @@
 *.so
 *.dylib
 
+npm-cleaner
+
 # Test binary, built with `go test -c`
 *.test
 
