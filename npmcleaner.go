@@ -7,7 +7,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
@@ -16,24 +15,8 @@ import (
 
 const NodeModules = "node_modules"
 
-var excludeFolders = []*regexp.Regexp{
-	//Folders starting with .
-	matchFolders(fmt.Sprintf("%s.+?", regexp.QuoteMeta("."))),
-	matchFolders("AppData"),
-	matchFolders("Program Files"),
-}
-
-var separatorEscaped = regexp.QuoteMeta(string(filepath.Separator))
-
-func matchFolders(folderName string) *regexp.Regexp {
-	regEx := fmt.Sprintf(".*?%s%s%s.*?",
-		separatorEscaped, folderName, separatorEscaped)
-
-	return regexp.MustCompile(regEx)
-}
-
-// Start with platform '/'
-var DefaultStartDir = string(filepath.Separator)
+// Start with platform '.'
+var DefaultStartDir = "."
 
 const HOME = "HOME"
 const WINHOME = "HOMEPATH"
@@ -52,6 +35,8 @@ func platformSetup() {
 }
 
 func getConfig() *Config {
+	platformSetup()
+
 	deleteFlag := flag.Bool("delete", false, "set to delete found folders")
 	fromDirFlag := flag.String("from", DefaultStartDir, "set starting directory")
 	mbThresh := flag.Int("mbthresh", DefaultMbGreater, "set mb size threshold")
@@ -73,8 +58,6 @@ func getConfig() *Config {
 }
 
 func main() {
-	platformSetup()
-
 	c := getConfig()
 
 	results, err := run(c)
@@ -187,12 +170,6 @@ func run(c *Config) (*Results, error) {
 		if !d.IsDir() {
 			return nil
 		}
-
-		// for _, excludePattern := range excludeFolders {
-		// 	if excludePattern.MatchString(path) {
-		// 		return fs.SkipDir
-		// 	}
-		// }
 
 		if filepath.Base(path) == NodeModules {
 			modDaysAgo, err := latestModifiedFile(filepath.Dir(path))
