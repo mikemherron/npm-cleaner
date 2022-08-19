@@ -127,7 +127,7 @@ func (r *Results) print(c *Config) {
 		fmt.Printf(fmtStringRows, f.path, f.modDaysAgo, f.sizeMb)
 	}
 
-	fmt.Printf("\n")
+	fmt.Printf("Total Size: %vMB\n", r.totalSizeMb)
 }
 
 type Folder struct {
