@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"time"
+	"strings"
 )
 
 const NodeModules = "node_modules"
@@ -34,7 +35,22 @@ func platformSetup() {
 	}
 }
 
-func getConfig() *Config {
+func (c Config) String() string {
+
+	var sb strings.Builder;
+
+	fmt.Fprintf(&sb, "Config\n======\n")
+	fmt.Fprintf(&sb, "Start Path:        %s\n", c.fromDir)
+	fmt.Fprintf(&sb, "Delete:            %v\n", c.delete)
+	fmt.Fprintf(&sb, "Older than (days): %v\n", c.daysAgo)
+	fmt.Fprintf(&sb, "MB Threshold:      %v\n", c.mbGreater)
+	fmt.Fprintf(&sb, "Folders limit:     %v\n", c.limit)
+
+	return sb.String()
+}
+
+
+func newConfig() *Config {
 	platformSetup()
 
 	deleteFlag := flag.Bool("delete", false, "set to delete found folders")
@@ -44,21 +60,21 @@ func getConfig() *Config {
 	limit := flag.Int("limit", DefaultLimit, "limit to this many folders")
 	flag.Parse()
 
-	c := newConfig(*deleteFlag, *fromDirFlag, *mbThresh, *older, *limit)
+	c := &Config{
+			daysAgo:   *older,
+			mbGreater: *mbThresh,
+			limit:     *limit,
+			fromDir:   *fromDirFlag,
+			delete:    *deleteFlag,
+		}
 
-	fmt.Printf("Config\n======\n")
-	fmt.Printf("Start Path:        %s\n", c.fromDir)
-	fmt.Printf("Delete:            %v\n", c.delete)
-	fmt.Printf("Older than (days): %v\n", c.daysAgo)
-	fmt.Printf("MB Threshold:      %v\n", c.mbGreater)
-	fmt.Printf("Folders limit:     %v\n", c.limit)
-	fmt.Printf("\n")
+	fmt.Println(c);
 
 	return c
 }
 
 func main() {
-	c := getConfig()
+	c := newConfig()
 
 	results, err := run(c)
 	if err != nil {
@@ -71,7 +87,8 @@ func main() {
 		return
 	}
 
-	results.print(c)
+	results.print()
+
 	if !c.delete {
 		fmt.Printf("Run with -delete to delete these folders\n")
 	} else {
@@ -109,7 +126,7 @@ func (r *Results) sort() {
 	})
 }
 
-func (r *Results) print(c *Config) {
+func (r *Results) print() {
 	longestPath := 0
 	for _, f := range r.folders {
 		if len(f.path) > longestPath {
@@ -150,21 +167,9 @@ const (
 	DefaultDaysAgo   = 7
 )
 
-func newConfig(delete bool, fromDir string, mbThresh int, older int, limit int) *Config {
-	return &Config{
-		daysAgo:   older,
-		mbGreater: mbThresh,
-		limit:     limit,
-		fromDir:   fromDir,
-		delete:    delete,
-	}
-}
-
 var reachedMax = errors.New("reached max found")
 
 func run(c *Config) (*Results, error) {
-	haveSkipped := false
-
 	results := newResults()
 	err := filepath.WalkDir(c.fromDir, func(path string, d fs.DirEntry, err error) error {
 		if !d.IsDir() {
@@ -178,8 +183,6 @@ func run(c *Config) (*Results, error) {
 			}
 
 			if modDaysAgo < c.daysAgo {
-				fmt.Printf("Skipping (age): (%d) %s\n", modDaysAgo, path)
-				haveSkipped = true
 				return fs.SkipDir
 			}
 
@@ -189,8 +192,6 @@ func run(c *Config) (*Results, error) {
 			}
 
 			if sizeMb < c.mbGreater {
-				haveSkipped = true
-				fmt.Printf("Skipping (size): (%d) %s\n", sizeMb, path)
 				return fs.SkipDir
 			}
 
@@ -210,10 +211,6 @@ func run(c *Config) (*Results, error) {
 
 		return nil
 	})
-
-	if haveSkipped {
-		fmt.Printf("\n")
-	}
 
 	if err != nil && err != reachedMax {
 		return nil, err
