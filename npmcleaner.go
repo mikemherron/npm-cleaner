@@ -7,17 +7,35 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
-	"time"
 	"strings"
+	"time"
 )
 
 const NodeModules = "node_modules"
 
+var excludeFolders = []*regexp.Regexp{
+	//Folders starting with .
+	matchFolders(fmt.Sprintf("%s.+?", regexp.QuoteMeta("."))),
+	matchFolders("AppData"),
+	matchFolders("Program Files"),
+}
+
+var separatorEscaped = regexp.QuoteMeta(string(filepath.Separator))
+
+func matchFolders(folderName string) *regexp.Regexp {
+	regEx := fmt.Sprintf(".*?%s%s%s.*?",
+		separatorEscaped, folderName, separatorEscaped)
+
+	return regexp.MustCompile(regEx)
+}
+
 // Start with platform '.'
 var DefaultStartDir = "."
+var onWindows = false
 
 const HOME = "HOME"
 const WINHOME = "HOMEPATH"
@@ -25,6 +43,7 @@ const WINHOME = "HOMEPATH"
 func platformSetup() {
 	if runtime.GOOS == "windows" {
 		DefaultStartDir = os.Getenv(WINHOME)
+		onWindows = true
 	} else if runtime.GOOS == "linux" {
 		DefaultStartDir = os.Getenv(HOME)
 	} else {
@@ -37,9 +56,10 @@ func platformSetup() {
 
 func (c Config) String() string {
 
-	var sb strings.Builder;
+	var sb strings.Builder
 
 	fmt.Fprintf(&sb, "Config\n======\n")
+	fmt.Fprintf(&sb, "On Windows         %v\n", c.onWindows)
 	fmt.Fprintf(&sb, "Start Path:        %s\n", c.fromDir)
 	fmt.Fprintf(&sb, "Delete:            %v\n", c.delete)
 	fmt.Fprintf(&sb, "Older than (days): %v\n", c.daysAgo)
@@ -48,7 +68,6 @@ func (c Config) String() string {
 
 	return sb.String()
 }
-
 
 func newConfig() *Config {
 	platformSetup()
@@ -61,14 +80,15 @@ func newConfig() *Config {
 	flag.Parse()
 
 	c := &Config{
-			daysAgo:   *older,
-			mbGreater: *mbThresh,
-			limit:     *limit,
-			fromDir:   *fromDirFlag,
-			delete:    *deleteFlag,
-		}
+		daysAgo:   *older,
+		mbGreater: *mbThresh,
+		limit:     *limit,
+		fromDir:   *fromDirFlag,
+		delete:    *deleteFlag,
+		onWindows:   onWindows,
+	}
 
-	fmt.Println(c);
+	fmt.Println(c)
 
 	return c
 }
@@ -159,6 +179,7 @@ type Config struct {
 	limit     int
 	fromDir   string
 	delete    bool
+	onWindows bool
 }
 
 const (
@@ -174,6 +195,15 @@ func run(c *Config) (*Results, error) {
 	err := filepath.WalkDir(c.fromDir, func(path string, d fs.DirEntry, err error) error {
 		if !d.IsDir() {
 			return nil
+		}
+
+		// Some places to ignore on Windows
+		if c.onWindows {
+			for _, excludePattern := range excludeFolders {
+				if excludePattern.MatchString(path) {
+					return fs.SkipDir
+				}
+			}
 		}
 
 		if filepath.Base(path) == NodeModules {
