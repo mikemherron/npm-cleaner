@@ -222,6 +222,9 @@ func run(c *Config) (*Results, []Debug, error) {
 	debug := []Debug{}
 
 	err := filepath.WalkDir(c.fromDir, func(path string, d fs.DirEntry, err error) error {
+		// TODO: Catches things like "~/projects" as a start directory
+		//       Better platform specific fixes for this, but no SIGSEGVs at least
+		//         See 'os/user' - user.Current()
 		if d == nil {
 			if c.debug {
 				dbg := Debug{
