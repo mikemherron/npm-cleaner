@@ -20,3 +20,6 @@ npm-cleaner
 go.work
 
 .idea
+
+# VSCode
+.vscode

@@ -65,6 +65,9 @@ func (c Config) String() string {
 	fmt.Fprintf(&sb, "Older than (days): %v\n", c.daysAgo)
 	fmt.Fprintf(&sb, "MB Threshold:      %v\n", c.mbGreater)
 	fmt.Fprintf(&sb, "Folders limit:     %v\n", c.limit)
+	if c.debug {
+		fmt.Fprintf(&sb, "Debug              %v\n", c.debug)
+	}
 
 	return sb.String()
 }
@@ -77,6 +80,7 @@ func newConfig() *Config {
 	mbThresh := flag.Int("mbthresh", DefaultMbGreater, "set mb size threshold")
 	older := flag.Int("older", DefaultDaysAgo, "examine folders older than (days)")
 	limit := flag.Int("limit", DefaultLimit, "limit to this many folders")
+	debugFlag := flag.Bool("debug", false, "set to output debug information")
 	flag.Parse()
 
 	c := &Config{
@@ -85,7 +89,8 @@ func newConfig() *Config {
 		limit:     *limit,
 		fromDir:   *fromDirFlag,
 		delete:    *deleteFlag,
-		onWindows:   onWindows,
+		onWindows: onWindows,
+		debug:     *debugFlag,
 	}
 
 	fmt.Println(c)
@@ -96,10 +101,15 @@ func newConfig() *Config {
 func main() {
 	c := newConfig()
 
-	results, err := run(c)
+	results, debug, err := run(c)
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "error: %s", err)
 		os.Exit(1)
+	}
+
+	if c.debug {
+		// Need this 'type conversion'
+		Debugs(debug).print()
 	}
 
 	if len(results.folders) == 0 {
@@ -167,11 +177,27 @@ func (r *Results) print() {
 	fmt.Printf("Total Size: %vMB\n", r.totalSizeMb)
 }
 
+func (d Debugs) print() {
+	fmt.Print("Debug\n")
+	for _, dbg := range d {
+		fmt.Printf("%s: File: %s, debug: %s\n", dbg.action, dbg.path, dbg.reason)
+	}
+	fmt.Print("\n")
+}
+
 type Folder struct {
 	path       string
 	sizeMb     int
 	modDaysAgo int
 }
+
+type Debug struct {
+	action string
+	path   string
+	reason string
+}
+
+type Debugs []Debug
 
 type Config struct {
 	daysAgo   int
@@ -180,6 +206,7 @@ type Config struct {
 	fromDir   string
 	delete    bool
 	onWindows bool
+	debug     bool
 }
 
 const (
@@ -190,9 +217,24 @@ const (
 
 var reachedMax = errors.New("reached max found")
 
-func run(c *Config) (*Results, error) {
+func run(c *Config) (*Results, []Debug, error) {
 	results := newResults()
+	debug := []Debug{}
+
 	err := filepath.WalkDir(c.fromDir, func(path string, d fs.DirEntry, err error) error {
+		if d == nil {
+			if c.debug {
+				dbg := Debug{
+					action: "ERROR!",
+					path:   path,
+					reason: fmt.Sprintf("PATH is INVALID"),
+				}
+				debug = append(debug, dbg)
+			}
+
+			return nil
+		}
+
 		if !d.IsDir() {
 			return nil
 		}
@@ -207,12 +249,29 @@ func run(c *Config) (*Results, error) {
 		}
 
 		if filepath.Base(path) == NodeModules {
-			modDaysAgo, err := latestModifiedFile(filepath.Dir(path))
+
+			info, err := d.Info()
 			if err != nil {
 				return err
 			}
 
+			modDaysAgo := daysSince(info.ModTime())
+
+			// NOTE: Not sure we need to do this extra work?
+			// modDaysAgo, err := latestModifiedFile(filepath.Dir(path))
+			// if err != nil {
+			// 	return err
+			// }
+
 			if modDaysAgo < c.daysAgo {
+				if c.debug {
+					dbg := Debug{
+						action: "SKIP",
+						path:   path,
+						reason: fmt.Sprintf("Age is less than %d days", c.daysAgo),
+					}
+					debug = append(debug, dbg)
+				}
 				return fs.SkipDir
 			}
 
@@ -222,6 +281,14 @@ func run(c *Config) (*Results, error) {
 			}
 
 			if sizeMb < c.mbGreater {
+				if c.debug {
+					dbg := Debug{
+						action: "SKIP",
+						path:   path,
+						reason: fmt.Sprintf("Size is less than %dMB", c.mbGreater),
+					}
+					debug = append(debug, dbg)
+				}
 				return fs.SkipDir
 			}
 
@@ -243,11 +310,11 @@ func run(c *Config) (*Results, error) {
 	})
 
 	if err != nil && err != reachedMax {
-		return nil, err
+		return nil, debug, err
 	}
 
 	results.sort()
-	return results, nil
+	return results, debug, nil
 }
 
 func latestModifiedFile(p string) (int, error) {
