@@ -8,8 +8,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -31,15 +33,83 @@ func matchFolders(folderName string) *regexp.Regexp {
 	return regexp.MustCompile(regEx)
 }
 
-func main() {
+// Start with platform '.'
+var DefaultStartDir = "."
+var onWindows = false
+
+const HOME = "HOME"
+const WINHOME = "HOMEPATH"
+
+func platformSetup() {
+	if runtime.GOOS == "windows" {
+		DefaultStartDir = os.Getenv(WINHOME)
+		onWindows = true
+	} else if runtime.GOOS == "linux" {
+		DefaultStartDir = os.Getenv(HOME)
+	} else {
+		val, ok := os.LookupEnv(HOME)
+		if ok {
+			DefaultStartDir = val
+		}
+	}
+}
+
+func (c Config) String() string {
+
+	var sb strings.Builder
+
+	fmt.Fprintf(&sb, "Config\n======\n")
+	fmt.Fprintf(&sb, "On Windows         %v\n", c.onWindows)
+	fmt.Fprintf(&sb, "Start Path:        %s\n", c.fromDir)
+	fmt.Fprintf(&sb, "Delete:            %v\n", c.delete)
+	fmt.Fprintf(&sb, "Older than (days): %v\n", c.daysAgo)
+	fmt.Fprintf(&sb, "MB Threshold:      %v\n", c.mbGreater)
+	fmt.Fprintf(&sb, "Folders limit:     %v\n", c.limit)
+	if c.debug {
+		fmt.Fprintf(&sb, "Debug              %v\n", c.debug)
+	}
+
+	return sb.String()
+}
+
+func newConfig() *Config {
+	platformSetup()
+
 	deleteFlag := flag.Bool("delete", false, "set to delete found folders")
+	fromDirFlag := flag.String("from", DefaultStartDir, "set starting directory")
+	mbThresh := flag.Int("mbthresh", DefaultMbGreater, "set mb size threshold")
+	older := flag.Int("older", DefaultDaysAgo, "examine folders older than (days)")
+	limit := flag.Int("limit", DefaultLimit, "limit to this many folders")
+	debugFlag := flag.Bool("debug", false, "set to output debug information")
 	flag.Parse()
 
-	c := newConfig(*deleteFlag)
-	results, err := run(c)
+	c := &Config{
+		daysAgo:   *older,
+		mbGreater: *mbThresh,
+		limit:     *limit,
+		fromDir:   *fromDirFlag,
+		delete:    *deleteFlag,
+		onWindows: onWindows,
+		debug:     *debugFlag,
+	}
+
+	fmt.Println(c)
+
+	return c
+}
+
+func main() {
+	c := newConfig()
+
+	results, debug, err := run(c)
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "error: %s", err)
 		os.Exit(1)
+	}
+
+	if c.debug {
+		// Need this 'type conversion'
+		Debugs(debug).print()
 	}
 
 	if len(results.folders) == 0 {
@@ -48,8 +118,9 @@ func main() {
 	}
 
 	results.print()
+
 	if !c.delete {
-		fmt.Printf("Run with -delete to delete these folders")
+		fmt.Printf("Run with -delete to delete these folders\n")
 	} else {
 		for _, f := range results.folders {
 			fmt.Printf("Deleting %s...", f.path)
@@ -95,13 +166,23 @@ func (r *Results) print() {
 
 	longestPath++
 
-	fmtStringRows := "%-" + strconv.Itoa(longestPath) + "s|%20d|%15dMB\n"
-	fmtStringHead := "%-" + strconv.Itoa(longestPath) + "s|%20s|%17s\n"
+	fmtStringRows := "%-" + strconv.Itoa(longestPath) + "s|%20d |%15dMB\n"
+	fmtStringHead := "%-" + strconv.Itoa(longestPath) + "s|%20s |%17s\n"
 
 	fmt.Printf(fmtStringHead, "Path", "Modified Days Ago", "Size MB")
 	for _, f := range r.folders {
 		fmt.Printf(fmtStringRows, f.path, f.modDaysAgo, f.sizeMb)
 	}
+
+	fmt.Printf("Total Size: %vMB\n", r.totalSizeMb)
+}
+
+func (d Debugs) print() {
+	fmt.Print("Debug\n")
+	for _, dbg := range d {
+		fmt.Printf("%s: File: %s, debug: %s\n", dbg.action, dbg.path, dbg.reason)
+	}
+	fmt.Print("\n")
 }
 
 type Folder struct {
@@ -110,12 +191,22 @@ type Folder struct {
 	modDaysAgo int
 }
 
+type Debug struct {
+	action string
+	path   string
+	reason string
+}
+
+type Debugs []Debug
+
 type Config struct {
 	daysAgo   int
 	mbGreater int
 	limit     int
 	fromDir   string
 	delete    bool
+	onWindows bool
+	debug     bool
 }
 
 const (
@@ -124,40 +215,66 @@ const (
 	DefaultDaysAgo   = 7
 )
 
-var DefaultStartDir = string(filepath.Separator)
-
-func newConfig(delete bool) *Config {
-	return &Config{
-		daysAgo:   DefaultDaysAgo,
-		mbGreater: DefaultMbGreater,
-		limit:     DefaultLimit,
-		fromDir:   DefaultStartDir,
-		delete:    delete,
-	}
-}
-
 var reachedMax = errors.New("reached max found")
 
-func run(c *Config) (*Results, error) {
+func run(c *Config) (*Results, []Debug, error) {
 	results := newResults()
+	debug := []Debug{}
+
 	err := filepath.WalkDir(c.fromDir, func(path string, d fs.DirEntry, err error) error {
+		// TODO: Catches things like "~/projects" as a start directory
+		//       Better platform specific fixes for this, but no SIGSEGVs at least
+		//         See 'os/user' - user.Current()
+		if d == nil {
+			if c.debug {
+				dbg := Debug{
+					action: "ERROR!",
+					path:   path,
+					reason: fmt.Sprintf("PATH is INVALID"),
+				}
+				debug = append(debug, dbg)
+			}
+
+			return nil
+		}
+
 		if !d.IsDir() {
 			return nil
 		}
 
-		for _, excludePattern := range excludeFolders {
-			if excludePattern.MatchString(path) {
-				return fs.SkipDir
+		// Some places to ignore on Windows
+		if c.onWindows {
+			for _, excludePattern := range excludeFolders {
+				if excludePattern.MatchString(path) {
+					return fs.SkipDir
+				}
 			}
 		}
 
 		if filepath.Base(path) == NodeModules {
-			modDaysAgo, err := latestModifiedFile(filepath.Dir(path))
+
+			info, err := d.Info()
 			if err != nil {
 				return err
 			}
 
+			modDaysAgo := daysSince(info.ModTime())
+
+			// NOTE: Not sure we need to do this extra work?
+			// modDaysAgo, err := latestModifiedFile(filepath.Dir(path))
+			// if err != nil {
+			// 	return err
+			// }
+
 			if modDaysAgo < c.daysAgo {
+				if c.debug {
+					dbg := Debug{
+						action: "SKIP",
+						path:   path,
+						reason: fmt.Sprintf("Age is less than %d days", c.daysAgo),
+					}
+					debug = append(debug, dbg)
+				}
 				return fs.SkipDir
 			}
 
@@ -167,6 +284,14 @@ func run(c *Config) (*Results, error) {
 			}
 
 			if sizeMb < c.mbGreater {
+				if c.debug {
+					dbg := Debug{
+						action: "SKIP",
+						path:   path,
+						reason: fmt.Sprintf("Size is less than %dMB", c.mbGreater),
+					}
+					debug = append(debug, dbg)
+				}
 				return fs.SkipDir
 			}
 
@@ -188,11 +313,11 @@ func run(c *Config) (*Results, error) {
 	})
 
 	if err != nil && err != reachedMax {
-		return nil, err
+		return nil, debug, err
 	}
 
 	results.sort()
-	return results, nil
+	return results, debug, nil
 }
 
 func latestModifiedFile(p string) (int, error) {
